@@ -1,5 +1,7 @@
-obj-m := t1-main.o
-#module-objs := t1-main.c
+obj-m := t1.o
+t1-y := t1-main.o resource_manager.o
+
+OBJS=t1.o t1-main.o resource_manager.o
 
 KERNEL_DIR=/lib/modules/`uname -r`/build
 
@@ -7,4 +9,4 @@ default:
 	make -C $(KERNEL_DIR) M=`pwd` modules
 
 clean:
-	@rm -f $(obj-m:.o=.mod.c) $(obj-m:.o=.mod.o) $(obj-m:.o=.ko) $(obj-m) modules.order  Module.symvers
+	@rm -f $(OBJS:.o=.mod.c) $(OBJS:.o=.mod.o) $(OBJS:.o=.ko) $(OBJS) modules.order  Module.symvers
