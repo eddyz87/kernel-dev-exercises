@@ -1,7 +1,7 @@
 obj-m := t1.o
-t1-y := t1-main.o resource_manager.o
+t1-y := t1-main.o resource_manager.o procfs.o
 
-OBJS=t1.o t1-main.o resource_manager.o
+OBJS=t1.o t1-main.o resource_manager.o procfs.o
 
 KERNEL_DIR=/lib/modules/`uname -r`/build
 
