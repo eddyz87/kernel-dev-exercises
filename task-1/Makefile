@@ -1,5 +1,5 @@
 obj-m := t1.o
-t1-y := t1-main.o resource_manager.o procfs.o
+t1-y := t1-main.o resource_manager.o procfs.o log.o
 
 OBJS=t1.o t1-main.o resource_manager.o procfs.o
 
