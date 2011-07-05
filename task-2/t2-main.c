@@ -169,6 +169,7 @@ static void stop_context(struct context* ctx) {
     del_timer_sync(&(ctx->timer_b));
     del_timer_sync(&(ctx->timer_c));
     tasklet_disable(&(ctx->timer_c_tasklet));
+    // BUG: tasklet_kill(&(ctx->timer_c_tasklet)); here !!!
     if (ctx->work_queue) {
         flush_workqueue(ctx->work_queue);
         destroy_workqueue(ctx->work_queue);
