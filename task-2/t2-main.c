@@ -73,6 +73,7 @@ static void timer_b_func(unsigned long arg) {
     ctx->timer_b_fires += 1;
     inc_shared_counter(ctx, "timer B");
 
+    // BUG: have to prevent this if module terminates
     if (ctx->timer_b_fires < TIMER_B_FIRES_LIMIT) {
         mod_timer_ms(&(ctx->timer_b), TIMER_B_PERIOD_MSEC);
     }
@@ -93,6 +94,7 @@ static void timer_c_tasklet_func(unsigned long arg) {
 
     inc_shared_counter(ctx, "timer C tasklet");
 
+    // BUG: have to prevent this if module terminates
     if (ctx->timer_c_fires < TIMER_C_FIRES_LIMIT) {
         mod_timer_ms(&(ctx->timer_c), TIMER_C_PERIOD_MSEC);
     }
