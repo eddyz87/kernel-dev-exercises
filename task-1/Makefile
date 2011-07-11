@@ -5,6 +5,8 @@ OBJS=t1.o t1-main.o resource_manager.o procfs.o
 
 KERNEL_DIR=/lib/modules/`uname -r`/build
 
+EXTRA_CFLAGS+=-g
+
 default:
 	make -C $(KERNEL_DIR) M=`pwd` modules
 

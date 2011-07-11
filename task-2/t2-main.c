@@ -5,6 +5,15 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 #include <linux/kthread.h>
+#include <linux/completion.h>
+#include <linux/percpu.h>
+
+/*
+ TODO:
+    - spin locks
+    - vmalloc/kmalloc
+    - sem up/down
+ */
 
 #include "log.h"
 
@@ -15,16 +24,13 @@ MODULE_LICENSE("GPL");
 #define TIMER_C_PERIOD_MSEC     10
 #define THREAD_PERIOD_MSEC      100
 
-#define TIMER_B_FIRES_LIMIT     10
-#define TIMER_C_FIRES_LIMIT     10
-#define THREAD_FIRES_LIMIT      10
+#define TIMER_B_FIRES_LIMIT     100
+#define TIMER_C_FIRES_LIMIT     100
+#define THREAD_FIRES_LIMIT      100
 
 #define WORKER_CYCLES           5
 
 #define mod_timer_ms(timer, msec) mod_timer((timer), msecs_to_jiffies(msec))
-
-// Q, investigate: different final value of the counter from launch to launch
-//                 is it lack of synchronization or i've made a mistake ?
 
 // TODO: make some stats in procfs,
 //       trigger new wave of counting by write to procfs entry
@@ -37,12 +43,24 @@ struct my_work {
     struct context *context;
 };
 
+struct percpu_stat {
+    int counter;
+};
+
 struct context {
     int shared_counter;
+    atomic_t atomic_shared_counter;
+
+    struct percpu_stat *local_stat; // stats on per-cpu basis
+    struct percpu_stat total_stat;           // total stats, updated on request basing on local stats
+    struct completion total_stat_update;     // used to sync total stat update request
+    struct my_work total_stat_update_work;
 
     struct timer_list timer_a;     // fires once
     struct timer_list timer_b;     // reactivates itself at each fire
     struct timer_list timer_c;     // fires once and launches tasklet and workqueue task
+
+    int running;
 
     struct tasklet_struct timer_c_tasklet;
     struct my_work work;
@@ -56,8 +74,17 @@ struct context {
 static void inc_shared_counter(struct context* ctx, char *prefix) {
     int old = ctx->shared_counter;
     int new = ++(ctx->shared_counter);
+    int cpu;
+    struct percpu_stat *local;
+    
+    cpu = get_cpu();
+    local = per_cpu_ptr(ctx->local_stat, cpu);
+    ++(local->counter);
+    put_cpu();
 
     LOG("%s: counter shift: %d -> %d%s", prefix, old, new, old + 1 == new ? "" : " RACE detected");
+
+    atomic_inc(&(ctx->atomic_shared_counter));
 }
 
 #define DEF_CONTEXT(name, arg) struct context* name = (struct context*)(arg)
@@ -73,8 +100,7 @@ static void timer_b_func(unsigned long arg) {
     ctx->timer_b_fires += 1;
     inc_shared_counter(ctx, "timer B");
 
-    // BUG: have to prevent this if module terminates
-    if (ctx->timer_b_fires < TIMER_B_FIRES_LIMIT) {
+    if (ctx->running && (ctx->timer_b_fires < TIMER_B_FIRES_LIMIT)) {
         mod_timer_ms(&(ctx->timer_b), TIMER_B_PERIOD_MSEC);
     }
 }
@@ -84,9 +110,11 @@ static void timer_c_func(unsigned long arg) {
     
     ctx->timer_c_fires += 1;
     inc_shared_counter(ctx, "timer C");
-    
-    tasklet_schedule(&(ctx->timer_c_tasklet));
-    queue_work(ctx->work_queue, &(ctx->work.work));
+   
+    if (ctx->running) { 
+        tasklet_schedule(&(ctx->timer_c_tasklet));
+        queue_work(ctx->work_queue, &(ctx->work.work));
+    }
 }
 
 static void timer_c_tasklet_func(unsigned long arg) {
@@ -94,8 +122,7 @@ static void timer_c_tasklet_func(unsigned long arg) {
 
     inc_shared_counter(ctx, "timer C tasklet");
 
-    // BUG: have to prevent this if module terminates
-    if (ctx->timer_c_fires < TIMER_C_FIRES_LIMIT) {
+    if (ctx->running && (ctx->timer_c_fires < TIMER_C_FIRES_LIMIT)) {
         mod_timer_ms(&(ctx->timer_c), TIMER_C_PERIOD_MSEC);
     }
 }
@@ -110,6 +137,11 @@ static void worker_func(struct my_work *work) {
     for (i = 0; i < WORKER_CYCLES; ++i) {
         inc_shared_counter(ctx, "worker");
     }
+}
+
+static void update_total_stat(struct context *ctx) {
+    schedule_work(&ctx->total_stat_update_work.work);
+    wait_for_completion(&ctx->total_stat_update);
 }
 
 static int thread_func(void *arg) {
@@ -127,20 +159,57 @@ static int thread_func(void *arg) {
     return 0;
 }
 
+static void total_stat_update_worker_func(struct my_work *work) {
+    DEF_CONTEXT(ctx, work->context);
+    int i;
+    struct percpu_stat *local;
+    
+    for_each_possible_cpu(i) {
+        // Q: what if i want a lock for 'local' structure,
+        //    how can i make a trigger get_cpu(i)/put_cpu(i) ??
+        local = per_cpu_ptr(ctx->local_stat, i);
+        ctx->total_stat.counter += local->counter;
+    }
+
+    complete(&ctx->total_stat_update);
+}
+
 #define callback(ctx, action, field, func) action(&((ctx)->field), (func), (unsigned long) (ctx))
 
+static void init_stat(struct percpu_stat *stat) {
+    stat->counter = 0;
+}
+
 static int init_context(struct context* ctx) {
+    int i;
+
     ctx->shared_counter = 0;
     ctx->timer_b_fires = 0;
     ctx->timer_c_fires = 0;
+    ctx->running = 1;
 
     callback(ctx, setup_timer, timer_a, timer_a_func);
     callback(ctx, setup_timer, timer_b, timer_b_func);
     callback(ctx, setup_timer, timer_c, timer_c_func);
     callback(ctx, tasklet_init, timer_c_tasklet, timer_c_tasklet_func);
 
-    INIT_WORK(&(ctx->work.work), (work_func_t)worker_func);
+    ctx->local_stat = alloc_percpu(struct percpu_stat);
+    if (!ctx->local_stat) {
+        ERR("cannot allocate per-cpu statistics");
+        return -1;
+    }
+
+    for_each_possible_cpu(i) {
+        init_stat(per_cpu_ptr(ctx->local_stat, i));
+    }
+    init_stat(&ctx->total_stat);
+
+    init_completion(&ctx->total_stat_update);
+
+    INIT_WORK(&ctx->work.work, (work_func_t)worker_func);
+    INIT_WORK(&ctx->total_stat_update_work.work, (work_func_t)total_stat_update_worker_func);
     ctx->work.context = ctx;
+    ctx->total_stat_update_work.context = ctx;
     
     ctx->work_queue = create_workqueue("r2d2");
     if (!ctx->work_queue) {
@@ -167,18 +236,31 @@ static void start_context(struct context* ctx) {
 }
 
 static void stop_context(struct context* ctx) {
+    ctx->running = 0;
+
     del_timer_sync(&(ctx->timer_a));
     del_timer_sync(&(ctx->timer_b));
     del_timer_sync(&(ctx->timer_c));
+
     tasklet_disable(&(ctx->timer_c_tasklet));
-    // BUG: tasklet_kill(&(ctx->timer_c_tasklet)); here !!!
+    tasklet_kill(&(ctx->timer_c_tasklet));
+
+    if (ctx->local_stat) {
+        free_percpu(ctx->local_stat);
+    }
+
     if (ctx->work_queue) {
         flush_workqueue(ctx->work_queue);
         destroy_workqueue(ctx->work_queue);
     }
+
     if (ctx->thread) {
         kthread_stop(ctx->thread);
     }
+
+    update_total_stat(ctx);
+
+    LOG("final values: %i:%i:%i", ctx->shared_counter, atomic_read(&ctx->atomic_shared_counter), ctx->total_stat.counter);
 }
 
 static int __init start(void) {
