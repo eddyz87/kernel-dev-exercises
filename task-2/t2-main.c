@@ -8,6 +8,9 @@
 #include <linux/completion.h>
 #include <linux/percpu.h>
 
+// need this for mouse interrupt number: I8042_AUX_IRQ -- PS/2 mouse
+#include <drivers/input/serio/i8042-io.h>
+
 /*
  TODO:
     - spin locks
