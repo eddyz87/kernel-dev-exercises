@@ -41,6 +41,7 @@ struct context {
     atomic_t failures_count;
     atomic_t mouse_irqs_count;
     atomic_t thread_syncs_count;
+    atomic_t tasklet_syncs_count;
 
     struct timer_list single_shot_timer;
     struct timer_list periodic_timer;
@@ -67,13 +68,9 @@ struct context {
 static LIST_HEAD(contexts);
 
 unsigned int get_random_int(void) {
-    //unsigned int v;
-    //get_random_bytes(&v, sizeof(v));
-    //return v;
-
-    static atomic_t v = ATOMIC_INIT(0);
-    atomic_inc(&v);
-    return atomic_read(&v);
+    unsigned int v;
+    get_random_bytes(&v, sizeof(v));
+    return v;
 }
 
 static void write_rc(struct context *ctx, common_resource rc, const char *name) {
@@ -100,10 +97,11 @@ static void write_rc(struct context *ctx, common_resource rc, const char *name) 
         ERR_RL("sync failure in: %s", name);
     }
 
-    LOG_RL("count is: %i/%i/%i/%i", atomic_read(&ctx->cycles_count),
-                                    atomic_read(&ctx->failures_count),
-                                    atomic_read(&ctx->mouse_irqs_count),
-                                    atomic_read(&ctx->thread_syncs_count));
+    LOG_RL("count is: %i/%i/%i/%i/%i", atomic_read(&ctx->cycles_count),
+                                       atomic_read(&ctx->failures_count),
+                                       atomic_read(&ctx->mouse_irqs_count),
+                                       atomic_read(&ctx->thread_syncs_count),
+                                       atomic_read(&ctx->tasklet_syncs_count));
 }
 
 static void write_rc_irq(struct context *ctx, const char *name) {
@@ -169,6 +167,8 @@ static void write_rc_tasklet(struct context *ctx, const char *name) {
     spin_lock(&ctx->tasklet_thread_lock);
     write_rc(ctx, ctx->rc_tasklet_thread, name); 
     spin_unlock(&ctx->tasklet_thread_lock);
+
+    atomic_inc(&ctx->tasklet_syncs_count);
 }
 
 static void tasklet_func(unsigned long arg) {
